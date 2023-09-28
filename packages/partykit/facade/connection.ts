@@ -63,12 +63,15 @@ const isPatched = (ws: WebSocket): ws is Party.Connection => {
  * Wraps a WebSocket with PartyConnection fields that rehydrate the
  * socket attachments lazily only when requested.
  */
-export const createLazyConnection = (ws: WebSocket): Party.Connection => {
+export const createLazyConnection = (
+  ws: WebSocket | Party.Connection
+): Party.Connection => {
   if (isPatched(ws)) {
     return ws;
   }
 
-  return Object.assign(ws, {
+  const initialState = "state" in ws ? ws.state : undefined;
+  const connection = Object.assign(ws, {
     __is_patched: true,
     get id() {
       return attachments.get(ws).__pk.id;
@@ -79,6 +82,25 @@ export const createLazyConnection = (ws: WebSocket): Party.Connection => {
     get socket() {
       return ws;
     },
+    get state() {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+      return this.deserializeAttachment() as Party.ConnectionState<unknown>;
+    },
+
+    setState<T>(setState: T | Party.ConnectionSetStateFn<T>) {
+      let state: T;
+      if (setState instanceof Function) {
+        state = setState(this.state as Party.ConnectionState<T>);
+      } else {
+        state = setState;
+      }
+
+      // TODO: deepFreeze object?
+
+      this.serializeAttachment(state);
+      return state as Party.ConnectionState<T>;
+    },
+
     deserializeAttachment<T = unknown>() {
       const attachment = attachments.get(ws);
       return (attachment.__user ?? null) as T;
@@ -88,6 +110,46 @@ export const createLazyConnection = (ws: WebSocket): Party.Connection => {
         ...attachments.get(ws),
         __user: attachment ?? null,
       });
+    },
+  });
+
+  // TODO: remove hack
+  if (initialState) {
+    connection.setState(initialState);
+  }
+
+  return connection;
+};
+
+export const createStatefulConnection = <TState>(
+  connection: Party.Connection<TState>
+): Party.Connection<TState> => {
+  if (isPatched(connection)) {
+    return connection;
+  }
+
+  let _state: TState;
+
+  return Object.assign(connection, {
+    __patched: true,
+
+    get state() {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+      return _state ?? null;
+    },
+
+    setState<T extends TState>(setState: T | Party.ConnectionSetStateFn<T>) {
+      let state: T;
+      if (setState instanceof Function) {
+        state = setState(this.state as Party.ConnectionState<T>);
+      } else {
+        state = setState;
+      }
+
+      // TODO: deepFreeze object?
+
+      _state = state;
+      return state as Party.ConnectionState<T>;
     },
   });
 };
@@ -125,7 +187,7 @@ export interface ConnectionManager {
   getCount(): number;
   getConnection(id: string): Party.Connection | undefined;
   getConnections(tag?: string): IterableIterator<Party.Connection>;
-  accept(connection: Party.Connection, tags: string[]): void;
+  accept(connection: Party.Connection, tags: string[]): Party.Connection;
 
   // This can be removed when Party.connections is removed
   legacy_getConnectionMap(): Map<string, Party.Connection>;
@@ -166,6 +228,7 @@ export class InMemoryConnectionManager implements ConnectionManager {
   }
 
   accept(connection: Party.Connection, tags: string[]): void {
+    connection = createStatefulConnection(connection);
     connection.accept();
 
     this.connections.set(connection.id, connection);
@@ -182,6 +245,8 @@ export class InMemoryConnectionManager implements ConnectionManager {
     };
     connection.addEventListener("close", removeConnection);
     connection.addEventListener("error", removeConnection);
+
+    return connection;
   }
 }
 
@@ -253,5 +318,7 @@ export class HibernatingConnectionManager implements ConnectionManager {
       },
       __user: null,
     });
+
+    return createLazyConnection(connection);
   }
 }
