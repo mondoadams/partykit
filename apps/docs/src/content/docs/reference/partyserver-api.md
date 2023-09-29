@@ -298,7 +298,7 @@ A per-party, asyncronous key-value storage.
 
 ```ts
 // write arbitrary data
-const input = { username: "jani" };
+const user = { username: "jani" };
 await this.party.storage.put("user", { user });
 // read data
 const user = await this.party.storage.get<{ username: string }>("user");
